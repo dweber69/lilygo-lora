@@ -20,6 +20,7 @@
 #include <GxIO/GxIO_SPI/GxIO_SPI.h>
 #include <GxDEPG0213BN/GxDEPG0213BN.h> // 2.13" b/w  form DKE GROUP
 #include <RadioLib.h>
+#include <ArduinoBLE.h>
 #include "WiFi.h"
 
 
@@ -162,7 +163,9 @@ uint16_t lora_uplink_interval_seconds = 5 * 60;
 
 
 // ============================================================================
+//
 // initialize board
+//
 // ============================================================================
 void initializeBoard() {
 
@@ -248,11 +251,22 @@ void initializeBoard() {
   WiFi.scanDelete();
 
 
+  // start bluetooth and scan for Shelly H&T sensors
+  Serial.println("Sanning Bluetooth LE...");
+  if(!BLE.begin()) {
+    Serial.println("Starting Bluetooth Low Energy module failed!");
+  }
+  Serial.println("Scanning...");
+  BLE.scanForName("SBHT-003C");
+
+
 }
 
 
 // ============================================================================
+//
 // helper function to display any issues
+//
 // ============================================================================
 void debug(bool failed, const char* message, int state, bool halt) {
   if(failed) {
@@ -268,7 +282,9 @@ void debug(bool failed, const char* message, int state, bool halt) {
 
 
 // ============================================================================
+//
 // helper function to display a byte array
+//
 // ============================================================================
 void arrayDump(uint8_t *buffer, uint16_t len) {
   for(uint16_t c = 0; c < len; c++) {
@@ -281,7 +297,74 @@ void arrayDump(uint8_t *buffer, uint16_t len) {
 
 
 // ============================================================================
+//
+//  Decode Shelly H&T Sensor Data
+//
+// ============================================================================
+void decodeSensor(uint8_t adv[], int len, String adr) {
+
+  int  index = 0;
+  int  bat;
+  int  temp;
+  int  hum;
+  int eir_len;
+  int eir_type;
+
+  while(index < len) {
+      eir_len = adv[index];
+      eir_type = adv[index+1];
+
+
+      if(eir_type == 0x16) {
+        // custom advertisement, what we want
+
+        int i = index+5;
+        while(i < index+eir_len) {
+
+          if(adv[i] == 0x00) {
+            // packet number
+            Serial.print(" #:");
+            Serial.print(adv[i+1]);
+          }
+          if(adv[i] == 0x01) {
+            // battery
+            bat = adv[i+1];
+            Serial.print(" Bat:");
+            Serial.print(bat);
+          }
+          if(adv[i] == 0x2e) {
+            // humidity
+            hum = adv[i+1];
+            Serial.print(" Hum:");
+            Serial.print(hum);
+          }
+          if(adv[i] == 0x3a) {
+            // button
+            Serial.print(" Button");
+          }
+          if(adv[i] == 0x45) {
+            // temperature
+            temp = adv[i+1] + adv[i+2]*256;
+            Serial.print(" Temp:");
+            Serial.print((float)temp / 10, 1);
+            i++;
+          }
+          i += 2;
+
+        }
+
+      }
+      index += eir_len+1;
+  }
+  Serial.println("");
+
+}
+  
+
+// ============================================================================
+//
 //  Setup routine, called when device starts
+//
 // ============================================================================
 void setup() {
 
@@ -292,13 +375,15 @@ void setup() {
 
 
 // ============================================================================
+//
 //  Working loop
+//
 // ============================================================================
 void loop() {
 
 
   // check if time for next lora uplink
-  if(millis() > (lora_timer + (lora_uplink_interval_seconds * 1000))) {
+  if((lora_timer == 0) || (millis() > (lora_timer + (lora_uplink_interval_seconds * 1000)))) {
 
     Serial.print("Sending uplink ");
 
@@ -333,5 +418,35 @@ void loop() {
     lora_timer = millis();
   }
 
-  
+  // check if we have bluetooth scan results
+  BLEDevice peripheral = BLE.available();
+  if(peripheral) {
+
+    Serial.print("Sensor Address: ");
+    Serial.print(peripheral.address());
+
+    if(peripheral.hasLocalName()) {
+      Serial.print("  Name: ");
+      Serial.print(peripheral.localName());
+    }
+
+    uint8_t advertisement[64] = {0};
+    int adLength = peripheral.advertisementData(advertisement, 64);
+
+    //Serial.print(" Advertisement: ");
+    //for(int i=0; i < adLength; i++) {
+    //  Serial.print(advertisement[i], HEX);
+    //  Serial.print(" ");
+    //}
+    //Serial.println("");
+
+    decodeSensor(advertisement, adLength, peripheral.address());
+  }
+  else {
+    // if we don't have bluetooth data we delay a bit, no need to keep the cpu running full steam through the loop
+    delay(1000);
+  }
+
 }
+
+
